@@ -12374,6 +12374,7 @@ function saveLocalLibraryState() {
 function localLibraryGroups() {
   return localLibraryState && Array.isArray(localLibraryState.groups) ? localLibraryState.groups : [];
 }
+var localLibraryDetailState = { id: '', renderLimit: PLAYLIST_DETAIL_INITIAL_RENDER };
 function localLibraryFirstCover() {
   var groups = localLibraryGroups();
   for (var i = 0; i < groups.length; i++) {
@@ -12410,6 +12411,10 @@ function applyLocalLibraryScan(result, opts) {
   }).filter(function(group){ return group.songCount > 0 && group.songs.length; });
   localLibraryState.roots = roots;
   localLibraryState.groups = groups;
+  if (!groups.some(function(group){ return group && group.id === localLibraryDetailState.id; })) {
+    localLibraryDetailState.id = '';
+    localLibraryDetailState.renderLimit = PLAYLIST_DETAIL_INITIAL_RENDER;
+  }
   localLibraryState.loading = false;
   localLibraryState.loaded = true;
   localLibraryState.error = '';
@@ -12469,12 +12474,16 @@ async function restoreLocalLibrary() {
   }
   return scanLocalLibraryRoots(localLibraryState.roots, { silent: true });
 }
-function playLocalLibraryGroup(groupId, index) {
+function localLibraryGroupById(groupId) {
   var groups = localLibraryGroups();
-  var group = null;
   for (var i = 0; i < groups.length; i++) {
-    if (groups[i] && groups[i].id === groupId) { group = groups[i]; break; }
+    if (groups[i] && groups[i].id === groupId) return groups[i];
   }
+  return null;
+}
+async function playLocalLibraryGroup(groupId, index, opts) {
+  opts = opts || {};
+  var group = localLibraryGroupById(groupId);
   if (!group || !group.songs.length) {
     showToast('这个分组里还没有可播放歌曲');
     return;
@@ -12487,7 +12496,63 @@ function playLocalLibraryGroup(groupId, index) {
   safeRenderQueuePanel('local-library-group');
   safeShelfRebuild('local-library-group', true);
   forcePlaybackControlsInteractive();
-  playQueueAt(currentIdx).catch(function(e){ console.warn('[LocalLibraryPlay]', e); });
+  try {
+    await playQueueAt(currentIdx, { manual: !!opts.manual });
+  } catch (e) {
+    console.warn('[LocalLibraryPlay]', e);
+  }
+}
+function toggleLocalLibraryDetail(groupId) {
+  if (!groupId) return;
+  if (localLibraryDetailState.id === groupId) {
+    localLibraryDetailState.id = '';
+    localLibraryDetailState.renderLimit = PLAYLIST_DETAIL_INITIAL_RENDER;
+  } else {
+    localLibraryDetailState.id = groupId;
+    localLibraryDetailState.renderLimit = PLAYLIST_DETAIL_INITIAL_RENDER;
+  }
+  renderLocalLibraryList();
+}
+function growLocalLibraryDetailRenderLimit(amount) {
+  var group = localLibraryGroupById(localLibraryDetailState.id);
+  var total = group && Array.isArray(group.songs) ? group.songs.length : 0;
+  if (!group || !total) return false;
+  var current = Math.max(PLAYLIST_DETAIL_INITIAL_RENDER, localLibraryDetailState.renderLimit || PLAYLIST_DETAIL_INITIAL_RENDER);
+  var next = Math.min(total, current + (amount || PLAYLIST_DETAIL_BATCH_SIZE));
+  if (next <= current) return false;
+  var panel = document.getElementById('playlist-panel');
+  var keepTop = panel ? panel.scrollTop : 0;
+  localLibraryDetailState.renderLimit = next;
+  renderLocalLibraryList();
+  if (panel) panel.scrollTop = keepTop;
+  return true;
+}
+function localLibraryDetailHtml(group) {
+  if (!group || localLibraryDetailState.id !== group.id) return '';
+  var songs = Array.isArray(group.songs) ? group.songs : [];
+  var renderLimit = Math.max(PLAYLIST_DETAIL_INITIAL_RENDER, localLibraryDetailState.renderLimit || PLAYLIST_DETAIL_INITIAL_RENDER);
+  renderLimit = Math.min(songs.length, renderLimit);
+  var rows = songs.slice(0, renderLimit).map(function(song, i){
+    var thumb = songCoverSrc(song, 60);
+    var imgTag = thumb ? '<img src="' + escHtml(thumb) + '" alt="" loading="lazy" decoding="async" onerror="this.style.opacity=0.2">' : '<div style="width:34px;height:34px;border-radius:7px;background:rgba(255,255,255,.06);flex:0 0 auto"></div>';
+    var isNow = isCurrentPlaybackSong(song);
+    var sub = song.relativePath || song.artist || '本地音乐';
+    return '<div class="pl-detail-row' + (isNow ? ' now' : '') + '" data-local-song-row="' + i + '" data-local-song-group="' + escAttr(group.id) + '">' +
+      imgTag +
+      '<div style="flex:1;min-width:0"><div class="pl-detail-row-title">' + escHtml(song.name || '') + '</div>' +
+      '<div class="pl-detail-row-artist">' + escHtml(sub) + '</div></div>' +
+      '<div class="pl-row-tail">' + (isNow ? nowPlayingVisualHtml('pl-now-visual') : '') + '</div>' +
+    '</div>';
+  }).join('');
+  if (!rows) rows = '<div style="text-align:center;padding:14px 0;color:rgba(255,255,255,.30);font-size:11.5px">这个分组里还没有可播放歌曲</div>';
+  if (songs.length > renderLimit) {
+    rows += '<button type="button" class="fx-mini-btn ghost pl-detail-load-more" data-local-detail-load-more="1">加载更多 ' + renderLimit + '/' + songs.length + '</button>';
+  } else if (songs.length > PLAYLIST_DETAIL_INITIAL_RENDER) {
+    rows += '<div class="pl-detail-progress">已显示全部 ' + songs.length + ' 首</div>';
+  }
+  return '<div class="pl-inline-detail" data-local-detail="' + escAttr(group.id) + '">' +
+    '<div class="pl-detail-list">' + rows + '</div>' +
+  '</div>';
 }
 function renderLocalLibraryList() {
   var list = document.getElementById('local-list');
@@ -12515,10 +12580,13 @@ function renderLocalLibraryList() {
   list.innerHTML = localLibraryState.groups.map(function(group){
     var thumb = group.cover || '';
     var imgTag = thumb ? '<img src="' + escAttr(thumb) + '" alt="" loading="lazy" decoding="async" onerror="this.style.opacity=0.2">' : '<div style="width:44px;height:44px;border-radius:8px;background:rgba(255,255,255,.06);flex-shrink:0"></div>';
-    return '<div class="pl-card" data-local-group-id="' + escAttr(group.id) + '">' +
+    var expanded = localLibraryDetailState.id === group.id ? ' expanded' : '';
+    var playBtn = '<button class="pl-detail-play" type="button" data-local-group-play="' + escAttr(group.id) + '" title="播放分组"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>播放全部</button>';
+    return '<div class="pl-card' + expanded + '" data-local-group-id="' + escAttr(group.id) + '">' +
       imgTag +
       '<div style="flex:1;min-width:0"><div class="pl-name">' + escHtml(group.title) + '</div><div class="pl-sub">' + escHtml(group.subtitle || '本地音乐') + ' · ' + escHtml(String(group.songCount || 0)) + ' 首</div></div>' +
-    '</div>';
+      playBtn +
+    '</div>' + localLibraryDetailHtml(group);
   }).join('');
 }
 function openLocalImportEntry() {
@@ -19363,7 +19431,7 @@ async function playQueueAt(idx, opts) {
         safePlaybackStep('visual-prep-hide-chip', hideBeatChip);
       }
       markPlayPhase('audio-start');
-      var localStarted = await playAudio({ silent: false });
+      var localStarted = await playAudio({ manual: !!opts.manual, silent: false });
       if (!localStarted) {
         forcePlaybackControlsInteractive();
         showSourceFallbackNotice('歌曲已载入', '点击播放器中间的播放按钮继续播放。');
@@ -19499,7 +19567,7 @@ async function playQueueAt(idx, opts) {
       safePlaybackStep('visual-prep-hide-chip', hideBeatChip);
     }
     markPlayPhase('audio-start');
-    var playbackStarted = await playAudio({ silent: isQQPlayback });
+    var playbackStarted = await playAudio({ manual: !!opts.manual, silent: isQQPlayback });
     if (!playbackStarted) {
       if (isQQPlayback && await retryQQPlaybackWithCompatibleQuality(song, idx, token, opts, data, requestedQuality)) return;
       forcePlaybackControlsInteractive();
@@ -19581,7 +19649,7 @@ async function attemptAudioPlay(opts) {
 }
 async function playAudio(opts) {
   opts = opts || {};
-  return attemptAudioPlay({ manual: false, silent: !!opts.silent });
+  return attemptAudioPlay({ manual: !!opts.manual, silent: !!opts.silent });
 }
 async function togglePlay() {
   if (playToggleBusy) return;
@@ -20675,9 +20743,30 @@ if (podcastListEl) {
 var localListEl = document.getElementById('local-list');
 if (localListEl) {
   localListEl.addEventListener('click', function(e){
+    var playBtn = e.target && e.target.closest ? e.target.closest('[data-local-group-play]') : null;
+    if (playBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      playLocalLibraryGroup(playBtn.getAttribute('data-local-group-play') || '', 0, { manual: true });
+      return;
+    }
+    var loadMore = e.target && e.target.closest ? e.target.closest('[data-local-detail-load-more]') : null;
+    if (loadMore) {
+      e.preventDefault();
+      e.stopPropagation();
+      growLocalLibraryDetailRenderLimit();
+      return;
+    }
+    var row = e.target && e.target.closest ? e.target.closest('[data-local-song-row]') : null;
+    if (row) {
+      e.preventDefault();
+      e.stopPropagation();
+      playLocalLibraryGroup(row.getAttribute('data-local-song-group') || '', Number(row.getAttribute('data-local-song-row')), { manual: true });
+      return;
+    }
     var card = e.target && e.target.closest ? e.target.closest('[data-local-group-id]') : null;
     if (!card) return;
-    playLocalLibraryGroup(card.getAttribute('data-local-group-id') || '', 0);
+    toggleLocalLibraryDetail(card.getAttribute('data-local-group-id') || '');
   });
 }
 function renderMyPodcastRadioItems(key, title, items) {
