@@ -1,7 +1,9 @@
-# Mineradio 作者支持渠道
+# Support
 
-如果 Mineradio 陪你多听了一首歌，也欢迎通过下面的二维码支持作者继续维护。
+本仓库不提供打赏、赞赏或收款入口。
 
-![Mineradio 作者支持渠道](./assets/support/mineradio-author-support-poster.png)
+如果你想支持 MineRadio for Mac，可以通过以下方式参与：
 
-扫码前请确认收款人信息。二维码来自作者提供的支付宝与微信赞赏原图裁切。
+- 在 GitHub Issues 反馈 bug 或使用问题。
+- 提交 Pull Request 改进 macOS 适配、本地音乐导入、歌词体验或文档。
+- 在二次开发或分发时保留 GPL-3.0 授权和必要的开源说明。
